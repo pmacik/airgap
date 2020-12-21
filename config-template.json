@@ -1,0 +1,9 @@
+{
+    "cluster_type_template": "private-templates/functionality-testing/aos-4_7/upi-on-aws/versioned-installer-disconnected",
+    "ocp_release": "registry.svc.ci.openshift.org/ocp/release:4.7.0-fc.3",
+    "jenkins_agent_label": "oc47",
+    "user": {
+        "name": "",
+        "api_token": ""
+    }
+}

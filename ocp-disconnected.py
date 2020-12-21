@@ -1,26 +1,22 @@
 #!/usr/bin/python
 # Provision OpenShift disconnected Cluster
 
-# For this script to work, set the following environment variables
-# export CLUSTER_TYPE_TEMPLATE='private-templates/functionality-testing/aos-4_6/upi-on-aws/versioned-installer-disconnected'
-# export OCP_RELEASE='registry.svc.ci.openshift.org/ocp/release:4.6.6'
-# export JENKINS_USER='<<username>>'
-# export JENKINS_USER_TOKEN='<<This(API Token) can be generated from jenkins portal configuration>>'
+# For this script to work, set the appropriate configuration in config.json file.
 
-# A sample test execution command for triggering a jenkins job
+# To provision a jenkins job
 # to provision disconnected cluster with the version set
-# using the above environment variables
-# ./jenkins_test_current.py trigger
+# use the above environment variables
+# ./ocp-disconnected.py provision
 
-# A sample test execution command for cleaning up the jenkins job using
-# using build number which is set in Environment variable
-# ./jenkins_test_current.py cleanup -b 124896
+# To clean up the cluster created by a given jenkins job
+# (using a given build number)
+# ./ocp-disconnected.py cleanup -b 3180
 
 
 from __future__ import print_function
 from jenkinsapi.jenkins import Jenkins
 from jenkinsapi.artifact import Artifact
-import os
+import datetime
 import urllib3
 from random import randint
 import argparse
@@ -28,14 +24,23 @@ import json
 
 urllib3.disable_warnings()
 
-cluster_type_template = os.getenv('CLUSTER_TYPE_TEMPLATE')
-ocp_release = "installer_payload_image: "+str(os.getenv('OCP_RELEASE'))
-jenkins_user = os.environ['JENKINS_USER']
-jenkins_pass = os.environ['JENKINS_USER_TOKEN']
-jenkins_url = \
-    "https://mastern-jenkins-csb-openshift-qe.cloud.paas.psi.redhat.com"
-job_name = "Launch Environment Flexy"
-# job_token = "118a583be998ad39d8588e0633eddf6a1f"
+
+with open('config.json') as f:
+    config = json.load(f)
+
+ocp_release = config["ocp_release"]
+cluster_type_template = config["cluster_type_template"]
+jenkins_agent_label = config["jenkins_agent_label"]
+jenkins_user = config["user"]["name"]
+jenkins_password = config["user"]["api_token"]
+
+if ocp_release is not None:
+    launcher_vars = f"installer_payload_image: {ocp_release}"
+else:
+    launcher_vars = ""
+
+jenkins_url = "https://mastern-jenkins-csb-openshift-qe.cloud.paas.psi.redhat.com"
+job_name = "ocp-common/Flexy-install"
 kubeconfig_artifact = 'kubeconfig'
 kubeadmin_password_artifact = 'kubeadmin-password'
 mirror_registry_artifact = 'cluster_info.json'
@@ -46,39 +51,44 @@ templates_repo = 'https://gitlab.cee.redhat.com/aosqe/flexy-templates.git'
 jenkins = Jenkins(
     jenkins_url,
     username=jenkins_user,
-    password=jenkins_pass,
+    password=jenkins_password,
     ssl_verify=False,
     timeout=60
 )
 
 
-def trigger_openshift_cluster_provision(cause=None):
-    INSTANCE_NAME = jenkins_user+str(randint(1, 500))
-    print('Using Cluster type template - {} \nOCP Release - {} \n'.format(cluster_type_template, ocp_release))
+def provision_openshift_cluster():
+    prefix = (jenkins_user[:6] if len(jenkins_user) >= 6 else jenkins_user)
+    now = datetime.datetime.now().strftime('%m%d%H%M')
+    instance_name = f'{prefix}{now}'
+    print(f'Using Cluster type template - {cluster_type_template}')
+    print(f'OCP Release - {ocp_release}')
     params = {'VARIABLES_LOCATION': cluster_type_template,
-              'LAUNCHER_VARS': ocp_release, 'INSTANCE_NAME_PREFIX': INSTANCE_NAME}
+              'LAUNCHER_VARS': launcher_vars,
+              'INSTANCE_NAME_PREFIX': instance_name,
+              'JENKINS_AGENT_LABEL': jenkins_agent_label}
 
     # This will start the job and will return a QueueItem object which
     # can be used to get build results
     job = jenkins[job_name]
     qi = job.invoke(
-        # securitytoken=job_token,
         build_params=params,
-        # cause=cause
     )
 
+    print(f"Waiting for a build of {job_name} to start...")
     if qi.is_queued():
         qi.block_until_building()
 
     build = qi.get_build()
-
-    if build.is_running():
-        build.block_until_complete(delay=40)
-
     build_number = build.get_number()
 
-    build = job.get_build(build_number)
-    print("Build {} finished with {}.".format(build, build.get_status()))
+    print(
+        f"Build #{build_number} of {job_name} is running. Waiting up to 50m for the build to complete.")
+
+    if build.is_running():
+        build.block_until_complete(delay=50)
+
+    print(f"Build {build} finished with {build.get_status()}.")
 
     get_artifacts(
         build_number, build, artifact=kubeconfig_artifact,
@@ -120,25 +130,22 @@ def get_artifacts(build_number, build, dir='.',
 parser = argparse.ArgumentParser(
     description="Provision OpenShift Disconnected Cluster")
 
-trigger_parser = argparse.ArgumentParser(add_help=False)
-trigger_parser.add_argument("-m", "--cause-message", dest="cause",
-                            default=os.getenv("BUILD_URL"), type=str,
-                            help="Trigger job cause")
+provision_parser = argparse.ArgumentParser(add_help=False)
 
 delete_parser = argparse.ArgumentParser(add_help=False)
 delete_parser.add_argument("-b", "--build-number", dest="build_number", type=int,
                            help="Jenkins job build number", required=True)
 
 sp = parser.add_subparsers(dest="action")
-sp.add_parser("trigger", parents=[
-    trigger_parser], help="Trigger provisioning of a new OpenShift Disconnected Cluster of a given version, return a # of a Jenkins Build")
+sp.add_parser("provision", parents=[
+    provision_parser], help="Provision provisioning of a new OpenShift Disconnected Cluster of a given version, return a # of a Jenkins Build")
 sp.add_parser("cleanup", parents=[
     delete_parser], help="Wait for a given Jenkins Build to do the cleanup")
 
 args = parser.parse_args()
 
-if args.action == "trigger":
-    build_number, mirror_registry = trigger_openshift_cluster_provision()
+if args.action == "provision":
+    build_number, mirror_registry = provision_openshift_cluster()
     print('export build_number="{}"'.format(build_number))
     print('export mirror_registry="{}"'.format(mirror_registry))
 elif args.action == "cleanup":
